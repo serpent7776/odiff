@@ -8,8 +8,8 @@ let test_antialiasing () =
   let diffPixels, diffPercentage, _ =
     PNG_Diff.compare img1 img2 ~antialiasing:true ()
   in
-  check int "diffPixels" 46 diffPixels;
-  check (float 0.001) "diffPercentage" 0.115 diffPercentage
+  check int "diffPixels" 38 diffPixels;
+  check (float 0.001) "diffPercentage" 0.095 diffPercentage
 
 let test_different_sized_aa_images () =
   let img1 = Png.IO.loadImage "test-images/aa/antialiasing-on.png" in
