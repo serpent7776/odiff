@@ -52,7 +52,7 @@ let main img1Path img2Path diffPath threshold outputDiffMask failOnLayoutChange
         Some
           (match outputDiffMask with
           | true -> IO1.makeSameAsLayout img1
-          | false -> img1)
+          | false -> IO1.clone img1)
   in
   let { exitCode } =
     Diff.diff img1 img2 ?diffOutput ~threshold ~failOnLayoutChange ~antialiasing
