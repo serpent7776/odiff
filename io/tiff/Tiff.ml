@@ -28,4 +28,12 @@ module IO : ImageIO = struct
   let makeSameAsLayout (img : t Odiff.ImageIO.img) =
     let data = Array1.create int32 c_layout (Array1.dim img.image.data) in
     { img with image = { data } }
+
+  let clone (img : t Odiff.ImageIO.img) : t Odiff.ImageIO.img =
+    let dim = Array1.dim img.image.data in
+    let kind = Array1.kind img.image.data in
+    let layout = Array1.layout img.image.data in
+    let new_arr = Array1.create kind layout dim in
+    Array1.blit img.image.data new_arr;
+    { width = img.width; height = img.height; image = { data = new_arr } }
 end
