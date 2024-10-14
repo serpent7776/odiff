@@ -26,7 +26,7 @@ let run_tiff_tests () =
           test_case "finds difference between 2 images" `Quick (fun () ->
               let img1 = load_tiff_image "test-images/tiff/laptops.tiff" in
               let img2 = load_tiff_image "test-images/tiff/laptops-2.tiff" in
-              let _, diffPixels, diffPercentage, _ =
+              let diffPixels, diffPercentage, _ =
                 Diff.compare img1 img2 ()
               in
               check int "diffPixels" 8569 diffPixels;
@@ -34,13 +34,13 @@ let run_tiff_tests () =
           test_case "Diff of mask and no mask are equal" `Quick (fun () ->
               let img1 = load_tiff_image "test-images/tiff/laptops.tiff" in
               let img2 = load_tiff_image "test-images/tiff/laptops-2.tiff" in
-              let _, diffPixels, diffPercentage, _ =
-                Diff.compare img1 img2 ~outputDiffMask:false ()
+              let diffPixels, diffPercentage, _ =
+                Diff.compare img1 img2 ()
               in
               let img1 = load_tiff_image "test-images/tiff/laptops.tiff" in
               let img2 = load_tiff_image "test-images/tiff/laptops-2.tiff" in
-              let _, diffPixelsMask, diffPercentageMask, _ =
-                Diff.compare img1 img2 ~outputDiffMask:true ()
+              let diffPixelsMask, diffPercentageMask, _ =
+                Diff.compare img1 img2 ()
               in
               check int "diffPixels" diffPixels diffPixelsMask;
               check (float 0.001) "diffPercentage" diffPercentage
@@ -48,12 +48,14 @@ let run_tiff_tests () =
           test_case "Creates correct diff output image" `Quick (fun () ->
               let img1 = load_tiff_image "test-images/tiff/laptops.tiff" in
               let img2 = load_tiff_image "test-images/tiff/laptops-2.tiff" in
-              let diffOutput, _, _, _ = Diff.compare img1 img2 () in
+              let diffOutput = img1 in
+              let _, _, _ = Diff.compare img1 img2 ~diffOutput () in
               let originalDiff =
                 load_png_image "test-images/tiff/laptops-diff.png"
               in
-              let diffMaskOfDiff, diffOfDiffPixels, diffOfDiffPercentage, _ =
-                Output_Diff.compare originalDiff diffOutput ()
+              let diffMaskOfDiff = originalDiff in
+              let diffOfDiffPixels, diffOfDiffPercentage, _ =
+                Output_Diff.compare originalDiff diffOutput ~diffOutput:diffMaskOfDiff ()
               in
               if diffOfDiffPixels > 0 then (
                 Tiff.IO.saveImage diffOutput "test-images/tiff/_diff-output.png";

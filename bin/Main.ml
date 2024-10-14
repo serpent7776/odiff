@@ -13,7 +13,7 @@ let getIOModule filename =
        ^ " <base_image_path> <image_to_compare_path> <output_png_path>")
   | f -> failwith ("This format is not supported: " ^ f)
 
-type 'output diffResult = { exitCode : int; diff : 'output option }
+type diffResult = { exitCode : int }
 
 (* Arguments must remain positional for the cmd parser lib that we use *)
 let main img1Path img2Path diffPath threshold outputDiffMask failOnLayoutChange
@@ -45,9 +45,14 @@ let main img1Path img2Path diffPath threshold outputDiffMask failOnLayoutChange
   let module Diff = MakeDiff (IO1) (IO2) in
   let img1 = IO1.loadImage img1Path in
   let img2 = IO2.loadImage img2Path in
-  let { diff; exitCode } =
-    Diff.diff img1 img2 ~outputDiffMask ~threshold ~failOnLayoutChange
-      ~antialiasing ~ignoreRegions ~diffLines
+  let diffOutput =
+    match outputDiffMask with
+    | true -> IO1.makeSameAsLayout img1
+    | false -> img1
+  in
+  let { exitCode } =
+    Diff.diff img1 img2 ~diffOutput ~threshold ~failOnLayoutChange ~antialiasing
+      ~ignoreRegions ~diffLines
       ~diffPixel:
         (match Color.ofHexString diffColorHex with
         | Some c -> c
@@ -55,19 +60,18 @@ let main img1Path img2Path diffPath threshold outputDiffMask failOnLayoutChange
       ()
     |> Print.printDiffResult toEmitStdoutParsableString
     |> function
-    | Layout -> { diff = None; exitCode = 21 }
-    | Pixel (diffOutput, diffCount, stdoutParsableString, _) when diffCount = 0
-      ->
-        { exitCode = 0; diff = Some diffOutput }
-    | Pixel (diffOutput, diffCount, diffPercentage, _) ->
-        diffPath |> Option.iter (IO1.saveImage diffOutput);
-        { exitCode = 22; diff = Some diffOutput }
+    | Layout -> { exitCode = 21 }
+    | Pixel (diffCount, stdoutParsableString, _) when diffCount = 0 ->
+        { exitCode = 0 }
+    | Pixel (diffCount, diffPercentage, _) ->
+        (match diffPath with
+        | Some diffPath -> IO1.saveImage diffOutput diffPath
+        | _ -> ());
+        { exitCode = 22 }
   in
   IO1.freeImage img1;
   IO2.freeImage img2;
-  (match diff with
-  | Some output when outputDiffMask -> IO1.freeImage output
-  | _ -> ());
+  if outputDiffMask then IO1.freeImage diffOutput;
 
   (* Gc.print_stat stdout; *)
   exit exitCode

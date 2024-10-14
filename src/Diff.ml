@@ -6,7 +6,7 @@ let redPixel = Int32.of_int 4278190335
 (* Decimal representation of the RGBA in32 pixel green pixel *)
 let maxYIQPossibleDelta = 35215.
 
-type 'a diffVariant = Layout | Pixel of ('a * int * float * int Stack.t)
+type diffVariant = Layout | Pixel of (int * float * int Stack.t)
 
 let unrollIgnoreRegions width list =
   list
@@ -28,21 +28,16 @@ module MakeDiff (IO1 : ImageIO.ImageIO) (IO2 : ImageIO.ImageIO) = struct
   module CompAA = Antialiasing.MakeAntialiasing (IO2) (IO1)
 
   let compare (base : IO1.t ImageIO.img) (comp : IO2.t ImageIO.img)
-      ?(antialiasing = false) ?(outputDiffMask = false) ?(diffLines = false)
-      ?diffPixel ?(threshold = 0.1) ?ignoreRegions () =
+      ?(antialiasing = false) ?diffOutput ?(diffLines = false) ?diffPixel
+      ?(threshold = 0.1) ?ignoreRegions () =
     let maxDelta = maxYIQPossibleDelta *. (threshold ** 2.) in
     let diffPixel = match diffPixel with Some x -> x | None -> redPixel in
-    let diffOutput =
-      match outputDiffMask with
-      | true -> IO1.makeSameAsLayout base
-      | false -> base
-    in
 
     let diffCount = ref 0 in
     let diffLinesStack = Stack.create () in
     let countDifference x y =
       incr diffCount;
-      IO1.setImgColor ~x ~y diffPixel diffOutput;
+      Option.iter (IO1.setImgColor ~x ~y diffPixel) diffOutput;
 
       if
         diffLines
@@ -105,9 +100,9 @@ module MakeDiff (IO1 : ImageIO.ImageIO) (IO2 : ImageIO.ImageIO) = struct
       100.0 *. Float.of_int !diffCount
       /. (Float.of_int base.width *. Float.of_int base.height)
     in
-    (diffOutput, !diffCount, diffPercentage, diffLinesStack)
+    (!diffCount, diffPercentage, diffLinesStack)
 
-  let diff (base : IO1.t ImageIO.img) (comp : IO2.t ImageIO.img) ~outputDiffMask
+  let diff (base : IO1.t ImageIO.img) (comp : IO2.t ImageIO.img) ~diffOutput
       ?(threshold = 0.1) ~diffPixel ?(failOnLayoutChange = true)
       ?(antialiasing = false) ?(diffLines = false) ?ignoreRegions () =
     if
@@ -116,7 +111,7 @@ module MakeDiff (IO1 : ImageIO.ImageIO) (IO2 : ImageIO.ImageIO) = struct
     then Layout
     else
       let diffResult =
-        compare base comp ~threshold ~diffPixel ~outputDiffMask ~antialiasing
+        compare base comp ~threshold ~diffPixel ~diffOutput ~antialiasing
           ~diffLines ?ignoreRegions ()
       in
 

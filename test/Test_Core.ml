@@ -5,8 +5,8 @@ let test_antialiasing () =
   Sys.getcwd () |> print_endline;
   let img1 = Png.IO.loadImage "test-images/aa/antialiasing-on.png" in
   let img2 = Png.IO.loadImage "test-images/aa/antialiasing-off.png" in
-  let _, diffPixels, diffPercentage, _ =
-    PNG_Diff.compare img1 img2 ~outputDiffMask:false ~antialiasing:true ()
+  let diffPixels, diffPercentage, _ =
+    PNG_Diff.compare img1 img2 ~antialiasing:true ()
   in
   check int "diffPixels" 46 diffPixels;
   check (float 0.001) "diffPercentage" 0.115 diffPercentage
@@ -14,8 +14,8 @@ let test_antialiasing () =
 let test_different_sized_aa_images () =
   let img1 = Png.IO.loadImage "test-images/aa/antialiasing-on.png" in
   let img2 = Png.IO.loadImage "test-images/aa/antialiasing-off-small.png" in
-  let _, diffPixels, diffPercentage, _ =
-    PNG_Diff.compare img1 img2 ~outputDiffMask:true ~antialiasing:true ()
+  let diffPixels, diffPercentage, _ =
+    PNG_Diff.compare img1 img2 ~antialiasing:true ()
   in
   check int "diffPixels" 417 diffPixels;
   check (float 0.01) "diffPercentage" 1.0425 diffPercentage
@@ -23,7 +23,7 @@ let test_different_sized_aa_images () =
 let test_threshold () =
   let img1 = Png.IO.loadImage "test-images/png/orange.png" in
   let img2 = Png.IO.loadImage "test-images/png/orange_changed.png" in
-  let _, diffPixels, diffPercentage, _ =
+  let diffPixels, diffPercentage, _ =
     PNG_Diff.compare img1 img2 ~threshold:0.5 ()
   in
   check int "diffPixels" 25 diffPixels;
@@ -32,7 +32,7 @@ let test_threshold () =
 let test_ignore_regions () =
   let img1 = Png.IO.loadImage "test-images/png/orange.png" in
   let img2 = Png.IO.loadImage "test-images/png/orange_changed.png" in
-  let _diffOutput, diffPixels, diffPercentage, _ =
+  let diffPixels, diffPercentage, _ =
     PNG_Diff.compare img1 img2
       ~ignoreRegions:[ ((150, 30), (310, 105)); ((20, 175), (105, 200)) ]
       ()
@@ -43,14 +43,16 @@ let test_ignore_regions () =
 let test_diff_color () =
   let img1 = Png.IO.loadImage "test-images/png/orange.png" in
   let img2 = Png.IO.loadImage "test-images/png/orange_changed.png" in
-  let diffOutput, _, _, _ =
-    PNG_Diff.compare img1 img2
+  let diffOutput = img1 in
+  let _, _, _ =
+    PNG_Diff.compare img1 img2 ~diffOutput
       ~diffPixel:(Int32.of_int 4278255360 (*int32 representation of #00ff00*))
       ()
   in
   let originalDiff = Png.IO.loadImage "test-images/png/orange_diff_green.png" in
-  let diffMaskOfDiff, diffOfDiffPixels, diffOfDiffPercentage, _ =
-    PNG_Diff.compare originalDiff diffOutput ()
+  let diffMaskOfDiff = originalDiff in
+  let diffOfDiffPixels, diffOfDiffPercentage, _ =
+    PNG_Diff.compare originalDiff diffOutput ~diffOutput:diffMaskOfDiff ()
   in
   if diffOfDiffPixels > 0 then (
     Png.IO.saveImage diffOutput "test-images/png/diff-output-green.png";
@@ -77,8 +79,8 @@ let test_different_layouts () =
   Sys.getcwd () |> print_endline;
   let img1 = Png.IO.loadImage "test-images/png/white4x4.png" in
   let img2 = Png.IO.loadImage "test-images/png/purple8x8.png" in
-  let _, diffPixels, diffPercentage, _ =
-    PNG_Diff.compare img1 img2 ~outputDiffMask:false ~antialiasing:false ()
+  let diffPixels, diffPercentage, _ =
+    PNG_Diff.compare img1 img2 ~antialiasing:false ()
   in
   check int "diffPixels" 16 diffPixels;
   check (float 0.001) "diffPercentage" 100.0 diffPercentage

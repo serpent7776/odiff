@@ -17,7 +17,7 @@ let () =
           test_case "finds difference between 2 images" `Quick (fun () ->
               let img1 = load_image "test-images/png/orange.png" in
               let img2 = load_image "test-images/png/orange_changed.png" in
-              let _, diffPixels, diffPercentage, _ =
+              let diffPixels, diffPercentage, _ =
                 Diff.compare img1 img2 ()
               in
               check int "diffPixels" 1366 diffPixels;
@@ -25,13 +25,13 @@ let () =
           test_case "Diff of mask and no mask are equal" `Quick (fun () ->
               let img1 = load_image "test-images/png/orange.png" in
               let img2 = load_image "test-images/png/orange_changed.png" in
-              let _, diffPixels, diffPercentage, _ =
-                Diff.compare img1 img2 ~outputDiffMask:false ()
+              let diffPixels, diffPercentage, _ =
+                Diff.compare img1 img2 ()
               in
               let img1 = load_image "test-images/png/orange.png" in
               let img2 = load_image "test-images/png/orange_changed.png" in
-              let _, diffPixelsMask, diffPercentageMask, _ =
-                Diff.compare img1 img2 ~outputDiffMask:true ()
+              let diffPixelsMask, diffPercentageMask, _ =
+                Diff.compare img1 img2 ()
               in
               check int "diffPixels" diffPixels diffPixelsMask;
               check (float 0.001) "diffPercentage" diffPercentage
@@ -39,10 +39,12 @@ let () =
           test_case "Creates correct diff output image" `Quick (fun () ->
               let img1 = load_image "test-images/png/orange.png" in
               let img2 = load_image "test-images/png/orange_changed.png" in
-              let diffOutput, _, _, _ = Diff.compare img1 img2 () in
+              let diffOutput = img1 in
+              let _, _, _ = Diff.compare img1 img2 ~diffOutput () in
               let originalDiff = load_image "test-images/png/orange_diff.png" in
-              let diffMaskOfDiff, diffOfDiffPixels, diffOfDiffPercentage, _ =
-                Diff.compare originalDiff diffOutput ()
+              let diffMaskOfDiff = originalDiff in
+              let diffOfDiffPixels, diffOfDiffPercentage, _ =
+                Diff.compare originalDiff diffOutput ~diffOutput:diffMaskOfDiff ()
               in
               if diffOfDiffPixels > 0 then (
                 Png.IO.saveImage diffOutput "test-images/png/diff-output.png";
@@ -55,7 +57,7 @@ let () =
             `Quick (fun () ->
               let img1 = load_image "test-images/png/extreme-alpha.png" in
               let img2 = load_image "test-images/png/extreme-alpha-1.png" in
-              let _, diffPixels, _, _ = Diff.compare img1 img2 () in
+              let diffPixels, _, _ = Diff.compare img1 img2 () in
               check int "diffPixels" 0 diffPixels);
         ] );
     ]

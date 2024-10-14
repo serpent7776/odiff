@@ -16,26 +16,28 @@ let load_png_image path =
 let test_finds_difference_between_images () =
   let img1 = load_image "test-images/bmp/clouds.bmp" in
   let img2 = load_image "test-images/bmp/clouds-2.bmp" in
-  let _, diffPixels, diffPercentage, _ = Diff.compare img1 img2 () in
+  let diffPixels, diffPercentage, _ = Diff.compare img1 img2 () in
   check int "diffPixels" 191 diffPixels;
   check (float 0.001) "diffPercentage" 0.076 diffPercentage
 
 let test_diff_mask_no_mask_equal () =
   let img1 = load_image "test-images/bmp/clouds.bmp" in
   let img2 = load_image "test-images/bmp/clouds-2.bmp" in
-  let _, diffPixels, diffPercentage, _ = Diff.compare img1 img2 ~outputDiffMask:false () in
+  let diffPixels, diffPercentage, _ = Diff.compare img1 img2 () in
   let img1 = load_image "test-images/bmp/clouds.bmp" in
   let img2 = load_image "test-images/bmp/clouds-2.bmp" in
-  let _, diffPixelsMask, diffPercentageMask, _ = Diff.compare img1 img2 ~outputDiffMask:true () in
+  let diffPixelsMask, diffPercentageMask, _ = Diff.compare img1 img2 () in
   check int "diffPixels" diffPixels diffPixelsMask;
   check (float 0.001) "diffPercentage" diffPercentage diffPercentageMask
 
 let test_creates_correct_diff_output_image () =
   let img1 = load_image "test-images/bmp/clouds.bmp" in
   let img2 = load_image "test-images/bmp/clouds-2.bmp" in
-  let diffOutput, _, _, _ = Diff.compare img1 img2 () in
+  let diffOutput = img1 in
+  let _, _, _ = Diff.compare img1 img2 ~diffOutput () in
   let originalDiff = load_png_image "test-images/bmp/clouds-diff.png" in
-  let diffMaskOfDiff, diffOfDiffPixels, diffOfDiffPercentage, _ = Output_Diff.compare originalDiff diffOutput () in
+  let diffMaskOfDiff = originalDiff in
+  let diffOfDiffPixels, diffOfDiffPercentage, _ = Output_Diff.compare originalDiff diffOutput ~diffOutput:diffMaskOfDiff () in
   if diffOfDiffPixels > 0 then (
     Bmp.IO.saveImage diffOutput "test-images/bmp/_diff-output.png";
     Png.IO.saveImage diffMaskOfDiff "test-images/bmp/_diff-of-diff.png"
