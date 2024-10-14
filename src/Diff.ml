@@ -102,7 +102,7 @@ module MakeDiff (IO1 : ImageIO.ImageIO) (IO2 : ImageIO.ImageIO) = struct
     in
     (!diffCount, diffPercentage, diffLinesStack)
 
-  let diff (base : IO1.t ImageIO.img) (comp : IO2.t ImageIO.img) ~diffOutput
+  let diff (base : IO1.t ImageIO.img) (comp : IO2.t ImageIO.img) ?diffOutput
       ?(threshold = 0.1) ~diffPixel ?(failOnLayoutChange = true)
       ?(antialiasing = false) ?(diffLines = false) ?ignoreRegions () =
     if
@@ -111,7 +111,7 @@ module MakeDiff (IO1 : ImageIO.ImageIO) (IO2 : ImageIO.ImageIO) = struct
     then Layout
     else
       let diffResult =
-        compare base comp ~threshold ~diffPixel ~diffOutput ~antialiasing
+        compare base comp ~threshold ~diffPixel ?diffOutput ~antialiasing
           ~diffLines ?ignoreRegions ()
       in
 

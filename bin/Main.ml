@@ -46,12 +46,16 @@ let main img1Path img2Path diffPath threshold outputDiffMask failOnLayoutChange
   let img1 = IO1.loadImage img1Path in
   let img2 = IO2.loadImage img2Path in
   let diffOutput =
-    match outputDiffMask with
-    | true -> IO1.makeSameAsLayout img1
-    | false -> img1
+    match diffPath with
+    | None -> None
+    | Some _ ->
+        Some
+          (match outputDiffMask with
+          | true -> IO1.makeSameAsLayout img1
+          | false -> img1)
   in
   let { exitCode } =
-    Diff.diff img1 img2 ~diffOutput ~threshold ~failOnLayoutChange ~antialiasing
+    Diff.diff img1 img2 ?diffOutput ~threshold ~failOnLayoutChange ~antialiasing
       ~ignoreRegions ~diffLines
       ~diffPixel:
         (match Color.ofHexString diffColorHex with
@@ -64,14 +68,14 @@ let main img1Path img2Path diffPath threshold outputDiffMask failOnLayoutChange
     | Pixel (diffCount, stdoutParsableString, _) when diffCount = 0 ->
         { exitCode = 0 }
     | Pixel (diffCount, diffPercentage, _) ->
-        (match diffPath with
-        | Some diffPath -> IO1.saveImage diffOutput diffPath
-        | _ -> ());
+        (match (diffPath, diffOutput) with
+        | Some diffPath, Some diffOutput -> IO1.saveImage diffOutput diffPath
+        | _, _ -> ());
         { exitCode = 22 }
   in
   IO1.freeImage img1;
   IO2.freeImage img2;
-  if outputDiffMask then IO1.freeImage diffOutput;
+  if outputDiffMask then Option.iter IO1.freeImage diffOutput;
 
   (* Gc.print_stat stdout; *)
   exit exitCode
