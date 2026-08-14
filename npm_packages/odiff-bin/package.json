@@ -1,0 +1,31 @@
+{
+  "name": "odiff-bin",
+  "version": "4.5.0",
+  "author": "odiff contributors",
+  "license": "MIT",
+  "description": "The fastest image difference tool in the world",
+  "bin": {
+    "odiff": "bin/odiff"
+  },
+  "types": "odiff.d.ts",
+  "main": "odiff.js",
+  "files": [
+    "bin/odiff",
+    "binary.js",
+    "odiff.js",
+    "server.js",
+    "odiff.d.ts"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dmtrKovalenko/odiff"
+  },
+  "keywords": [
+    "visual-regression",
+    "pixelmatch",
+    "image",
+    "comparison",
+    "diff",
+    "zig"
+  ]
+}

@@ -1,7 +1,6 @@
 const fs = require("fs");
 const path = require("path");
 
-
 const readmePath = path.resolve(__dirname, "..", "README.md");
 const currentReadmeContent = fs.readFileSync(readmePath, {
   encoding: "utf-8",
@@ -14,34 +13,31 @@ const [startOfFile, afterStartMark] = currentReadmeContent.split(START_COMMENT);
 const [_, endOfFile] = afterStartMark.split(END_COMMENT);
 
 const tsInterface = fs.readFileSync(
-  path.resolve(__dirname, "..", "bin", "node-bindings", "odiff.d.ts"),
+  path.resolve(__dirname, "..", "npm_packages", "odiff-bin", "odiff.d.ts"),
   {
     encoding: "utf-8",
-  }
+  },
 );
 
 const updatedReadme = [
-    startOfFile,
-    START_COMMENT,
-    "\n```tsx\n",
-    tsInterface,
-    "```\n",
-    END_COMMENT,
-    endOfFile,
-  ].join("")
+  startOfFile,
+  START_COMMENT,
+  "\n```tsx\n",
+  tsInterface,
+  "```\n",
+  END_COMMENT,
+  endOfFile,
+].join("");
 
-  console.log(process.argv[2])
-if (process.argv[2] === 'verify') {
-   if (updatedReadme !== currentReadmeContent) {
-     throw new Error("❌ Outdated README detected. Run `esy process:readme` and repush your branch")
-   } else {
-     console.log("✅ README is up-to-date")
-   }
-} else { 
-  fs.writeFileSync(
-    readmePath,
-    updatedReadme
-  );
-
+console.log(process.argv[2]);
+if (process.argv[2] === "verify") {
+  if (updatedReadme !== currentReadmeContent) {
+    throw new Error(
+      "❌ Outdated README detected. Run `node scripts/process-readme.js` and repush your branch",
+    );
+  } else {
+    console.log("✅ README is up-to-date");
+  }
+} else {
+  fs.writeFileSync(readmePath, updatedReadme);
 }
-

@@ -1,0 +1,20 @@
+.{
+    .name = .odiff,
+    .version = "4.5.0",
+    .fingerprint = 0xb9748f3661c8366c,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .imgz = .{
+            .url = "git+https://github.com/shreyassanthu77/imgz.git#4d77943fa6a3ace131a946df508f9bb31c1c3fdb",
+            .hash = "imgz-0.4.0-BqHzkLVpCwD6qPhu_pv4aKELkDqH5sX2Z6DcZDp9r4oK",
+        },
+    },
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "LICENSE",
+        "README.md",
+    },
+}

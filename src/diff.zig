@@ -1,0 +1,703 @@
+// Core image diffing algorithm - equivalent to Diff.ml
+const std = @import("std");
+const builtin = @import("builtin");
+const io = @import("io.zig");
+const color_delta = @import("color_delta.zig");
+const antialiasing = @import("antialiasing.zig");
+
+const Image = io.Image;
+const ArrayList = std.ArrayList;
+
+const HAS_AVX512f = std.Target.x86.featureSetHas(builtin.cpu.features, .avx512f);
+const HAS_AVX512bwvl =
+    HAS_AVX512f and
+    std.Target.x86.featureSetHas(builtin.cpu.features, .avx512bw) and
+    std.Target.x86.featureSetHas(builtin.cpu.features, .avx512vl);
+
+// vxdiff.asm is x86_64 SysV only
+pub const HAS_VXDIFF_ASM = builtin.cpu.arch == .x86_64 and HAS_AVX512bwvl and switch (builtin.os.tag) {
+    .linux, .macos => true,
+    else => false,
+};
+const HAS_NEON = builtin.cpu.arch == .aarch64 and std.Target.aarch64.featureSetHas(builtin.cpu.features, .neon);
+const HAS_RVV = builtin.cpu.arch == .riscv64 and std.Target.riscv.featureSetHas(builtin.cpu.features, .v);
+
+const RED_PIXEL: u32 = 0xFF0000FF;
+const WHITE_PIXEL: u32 = 0xFFFFFFFF;
+const MAX_YIQ_POSSIBLE_DELTA: f64 = 35215.0;
+
+pub const DiffLines = struct {
+    lines: []u32,
+    count: u32,
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator, max_height: u32) !DiffLines {
+        const lines = try allocator.alloc(u32, max_height);
+        return DiffLines{
+            .lines = lines,
+            .count = 0,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *DiffLines) void {
+        self.allocator.free(self.lines);
+    }
+
+    pub fn addLine(self: *DiffLines, line: u32) void {
+        // Exactly match original logic: if (lines.items.len == 0 or lines.items[lines.items.len - 1] < y)
+        if (self.count == 0 or (self.count > 0 and self.lines[self.count - 1] < line)) {
+            if (self.count < self.lines.len) {
+                self.lines[self.count] = line;
+                self.count += 1;
+            }
+        }
+    }
+
+    pub fn getItems(self: *const DiffLines) []const u32 {
+        return self.lines[0..self.count];
+    }
+};
+
+// collector for individual diff columns that we seen, within ~10% of overhead
+pub const DiffCols = struct {
+    /// Bitset of seen column indexes, one bit per column
+    words: []u64,
+    cols: []u32,
+    count: u32,
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator, max_width: u32) !DiffCols {
+        const words = try allocator.alloc(u64, (max_width + 63) / 64);
+        @memset(words, 0);
+        return DiffCols{
+            .words = words,
+            .cols = &.{},
+            .count = 0,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *DiffCols) void {
+        self.allocator.free(self.words);
+        self.allocator.free(self.cols);
+    }
+
+    pub fn addCol(self: *DiffCols, col: u32) void {
+        const word_idx = col >> 6;
+        if (word_idx < self.words.len) {
+            const mask = @as(u64, 1) << @intCast(col & 63);
+
+            if (self.words[word_idx] & mask == 0) {
+                self.words[word_idx] |= mask;
+            }
+        }
+    }
+
+    pub fn finalize(self: *DiffCols) !void {
+        var total: u32 = 0;
+        for (self.words) |word| total += @popCount(word);
+
+        self.cols = try self.allocator.alloc(u32, total);
+        var count: u32 = 0;
+        for (self.words, 0..) |word_const, word_idx| {
+            var word = word_const;
+            while (word != 0) {
+                const bit: u32 = @intCast(@ctz(word));
+                self.cols[count] = @as(u32, @intCast(word_idx)) * 64 + bit;
+                count += 1;
+                word &= word - 1;
+            }
+        }
+        self.count = total;
+    }
+
+    pub fn getItems(self: *const DiffCols) []const u32 {
+        return self.cols[0..self.count];
+    }
+};
+
+pub const DiffVariant = union(enum) {
+    layout,
+    pixel: struct {
+        diff_output: ?Image,
+        diff_count: u32,
+        diff_percentage: f64,
+        diff_lines: ?DiffLines,
+        diff_cols: ?DiffCols,
+    },
+};
+
+pub const IgnoreRegion = struct {
+    x1: u32,
+    y1: u32,
+    x2: u32,
+    y2: u32,
+};
+
+pub const DiffOptions = struct {
+    antialiasing: bool = false,
+    output_diff_mask: bool = false,
+    diff_overlay_factor: ?f32 = null,
+    diff_lines: bool = false,
+    diff_cols: bool = false,
+    diff_pixel: u32 = RED_PIXEL,
+    threshold: f64 = 0.1,
+    ignore_regions: ?[]const IgnoreRegion = null,
+    capture_diff: bool = true,
+    fail_on_layout_change: bool = true,
+    enable_asm: bool = false,
+};
+
+pub fn unrollIgnoreRegions(width: u32, regions: ?[]const IgnoreRegion, allocator: std.mem.Allocator) !?[]u64 {
+    if (regions == null) return null;
+
+    // First, calculate how many line ranges we need
+    var total_lines: usize = 0;
+    for (regions.?) |region| {
+        const num_lines = region.y2 - region.y1 + 1;
+        total_lines += num_lines;
+    }
+
+    // Allocate space for all line ranges as u64 (packed start|end)
+    var unrolled = try allocator.alloc(u64, total_lines);
+    var idx: usize = 0;
+
+    // For each region, create a separate range for each row
+    // Pack as: lower 32 bits = start, upper 32 bits = end
+    for (regions.?) |region| {
+        var y = region.y1;
+        while (y <= region.y2) : (y += 1) {
+            const line_start: u64 = (y * width) + region.x1;
+            const line_end: u64 = (y * width) + region.x2;
+            unrolled[idx] = (line_end << 32) | line_start;
+            idx += 1;
+        }
+    }
+
+    return unrolled;
+}
+
+/// Because we unroll the ignore regions there could be easily be hundreds of them if the height of a region is large
+pub fn isInIgnoreRegion(offset: u32, regions: ?[]const u64) bool {
+    if (regions == null) return false;
+
+    const regions_slice = regions.?;
+    const len = regions_slice.len;
+
+    const SIMD_SIZE = comptime std.simd.suggestVectorLength(u64) orelse 4;
+    const simd_end = (len / SIMD_SIZE) * SIMD_SIZE;
+
+    const offset_vec: @Vector(SIMD_SIZE, u32) = @splat(offset);
+
+    var i: usize = 0;
+    while (i < simd_end) : (i += SIMD_SIZE) {
+        const packed_vec: @Vector(SIMD_SIZE, u64) = regions_slice[i..][0..SIMD_SIZE].*;
+
+        const starts: @Vector(SIMD_SIZE, u32) = @truncate(packed_vec);
+        const ends: @Vector(SIMD_SIZE, u32) = @truncate(packed_vec >> @splat(32));
+
+        const ge_mask = offset_vec >= starts;
+        const le_mask = offset_vec <= ends;
+        const in_range_mask = ge_mask & le_mask;
+
+        // If any lane is true, we found a match
+        if (@reduce(.Or, in_range_mask)) {
+            return true;
+        }
+    }
+
+    // Handle remaining regions with scalar code
+    i = simd_end;
+    while (i < len) : (i += 1) {
+        const packed_region = regions_slice[i];
+        const start: u32 = @truncate(packed_region);
+        const end: u32 = @truncate(packed_region >> 32);
+        if (offset >= start and offset <= end) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+pub noinline fn compare(
+    base: *const Image,
+    comp: *const Image,
+    options: DiffOptions,
+    allocator: std.mem.Allocator,
+) !struct { ?Image, u32, f64, ?DiffLines, ?DiffCols } {
+    const max_delta_f64 = MAX_YIQ_POSSIBLE_DELTA * (options.threshold * options.threshold);
+    const max_delta_i64: i64 = @intFromFloat(max_delta_f64 * @as(f64, @floatFromInt(1 << color_delta.COLOR_DELTA_SIMD_SHIFT)));
+
+    var diff_output: ?Image = null;
+    if (options.capture_diff) {
+        if (options.diff_overlay_factor) |factor| {
+            diff_output = try base.makeWithWhiteOverlay(factor, allocator);
+        } else if (options.output_diff_mask) {
+            diff_output = try base.makeSameAsLayout(allocator);
+        } else {
+            const data = try allocator.dupe(u32, base.slice());
+            diff_output = Image{
+                .width = base.width,
+                .height = base.height,
+                .data = data.ptr,
+                .len = data.len,
+            };
+        }
+    }
+
+    var diff_count: u32 = 0;
+    var diff_lines: ?DiffLines = null;
+    if (options.diff_lines) {
+        const max_height = @max(base.height, comp.height);
+        diff_lines = try DiffLines.init(allocator, max_height);
+    }
+
+    var diff_cols: ?DiffCols = null;
+    if (options.diff_cols) {
+        const max_width = @max(base.width, comp.width);
+        diff_cols = try DiffCols.init(allocator, max_width);
+    }
+
+    const ignore_regions = try unrollIgnoreRegions(base.width, options.ignore_regions, allocator);
+    defer if (ignore_regions) |regions| allocator.free(regions);
+
+    const layout_difference = base.width != comp.width or base.height != comp.height;
+
+    // AVX diff only supports default options.
+    // Layout differences are excluded because the vxdiff asm kernel only
+    // counts overflow pixels of the base image, it does not count extra comp image
+    // pixels when the comp image is larger (required since #170).
+    const threshold_ok = @abs(options.threshold - 0.1) < 0.0000001;
+    const no_ignore_regions = options.ignore_regions == null or options.ignore_regions.?.len == 0;
+    const avx_compatible = !options.antialiasing and no_ignore_regions and !options.capture_diff and !options.diff_lines and !options.diff_cols and threshold_ok and !layout_difference;
+
+    if (options.enable_asm and HAS_VXDIFF_ASM and avx_compatible) {
+        try compareAVX(base, comp, &diff_count);
+    } else if (HAS_RVV and !options.antialiasing and !options.diff_cols and (options.ignore_regions == null or options.ignore_regions.?.len == 0)) {
+        try compareRVV(base, comp, &diff_output, &diff_count, if (diff_lines != null) &diff_lines.? else null, ignore_regions, max_delta_f64, options);
+    } else if (layout_difference) {
+        // slow path for different layout or weird widths
+        try compareDifferentLayouts(base, comp, &diff_output, &diff_count, if (diff_lines != null) &diff_lines.? else null, if (diff_cols != null) &diff_cols.? else null, ignore_regions, max_delta_i64, options);
+    } else {
+        try compareSameLayouts(base, comp, &diff_output, &diff_count, if (diff_lines != null) &diff_lines.? else null, if (diff_cols != null) &diff_cols.? else null, ignore_regions, max_delta_i64, options);
+    }
+
+    if (diff_cols) |*cols| {
+        try cols.finalize();
+    }
+
+    const max_width = @max(base.width, comp.width);
+    const max_height = @max(base.height, comp.height);
+    const diff_percentage = 100.0 * @as(f64, @floatFromInt(diff_count)) /
+        (@as(f64, @floatFromInt(max_width)) * @as(f64, @floatFromInt(max_height)));
+
+    return .{ diff_output, diff_count, diff_percentage, diff_lines, diff_cols };
+}
+
+inline fn processPixelDifference(
+    // because for antialiasing detection we run both check from both image sides
+    // we have to provide the actual offset for both base and comp images
+    // if the layout is different but in most cases they will be the same
+    base_pixel_offset: usize,
+    comp_pixel_offset: usize,
+    base_color: u32,
+    comp_color: u32,
+    base: *const Image,
+    comp: *const Image,
+    diff_output: *?Image,
+    diff_count: *u32,
+    diff_lines: ?*DiffLines,
+    diff_cols: ?*DiffCols,
+    ignore_regions: ?[]u64,
+    max_delta: i64,
+    options: DiffOptions,
+) !void {
+    if (isInIgnoreRegion(@intCast(base_pixel_offset), ignore_regions)) {
+        return;
+    }
+
+    const delta = color_delta.calculatePixelColorDeltaSimd(base_color, comp_color);
+    if (delta > max_delta) {
+        var is_antialiased = false;
+
+        if (options.antialiasing) {
+            is_antialiased = antialiasing.detect(base_pixel_offset, base, comp) or
+                antialiasing.detect(comp_pixel_offset, comp, base);
+        }
+
+        if (!is_antialiased) {
+            diff_count.* += 1;
+            if (diff_output.*) |*output| {
+                output.setImgColorAtOffset(base_pixel_offset, options.diff_pixel);
+            }
+
+            if (diff_lines) |lines| {
+                lines.addLine(@intCast(base_pixel_offset / base.width));
+            }
+
+            if (diff_cols) |cols| {
+                cols.addCol(@intCast(base_pixel_offset % base.width));
+            }
+        }
+    }
+}
+
+inline fn increment_coords(x: *u32, y: *u32, width: u32) void {
+    x.* += 1;
+    if (x.* >= width) {
+        x.* = 0;
+        y.* += 1;
+    }
+}
+
+inline fn increment_coords_by(x: *u32, y: *u32, step: u32, width: u32) void {
+    var remaining = step;
+    while (remaining > 0) {
+        const pixels_to_end_of_row = width - x.*;
+        if (remaining >= pixels_to_end_of_row) {
+            remaining -= pixels_to_end_of_row;
+            x.* = 0;
+            y.* += 1;
+        } else {
+            x.* += remaining;
+            remaining = 0;
+        }
+    }
+}
+
+pub noinline fn compareSameLayouts(base: *const Image, comp: *const Image, diff_output: *?Image, diff_count: *u32, diff_lines: ?*DiffLines, diff_cols: ?*DiffCols, ignore_regions: ?[]u64, max_delta: i64, options: DiffOptions) !void {
+    const size = (base.height * base.width);
+    const base_data = base.data;
+    const comp_data = comp.data;
+
+    const SIMD_SIZE = std.simd.suggestVectorLength(u32) orelse if (HAS_AVX512f) 16 else if (HAS_NEON) 8 else 4;
+    const simd_end = (size / SIMD_SIZE) * SIMD_SIZE;
+
+    var offset: usize = 0;
+    while (offset < simd_end) : (offset += SIMD_SIZE) {
+        const base_vec: @Vector(SIMD_SIZE, u32) = base_data[offset .. offset + SIMD_SIZE][0..SIMD_SIZE].*;
+        const comp_vec: @Vector(SIMD_SIZE, u32) = comp_data[offset .. offset + SIMD_SIZE][0..SIMD_SIZE].*;
+
+        const diff_mask = base_vec != comp_vec;
+        if (@reduce(.Or, diff_mask)) {
+            // Zig 0.16 requires comptime-known vector indices; copy to arrays first.
+            const mask_arr: [SIMD_SIZE]bool = diff_mask;
+            const base_arr: [SIMD_SIZE]u32 = base_vec;
+            const comp_arr: [SIMD_SIZE]u32 = comp_vec;
+            for (0..SIMD_SIZE) |i| {
+                if (mask_arr[i]) {
+                    const pixel_offset = offset + i;
+                    const base_color = base_arr[i];
+                    const comp_color = comp_arr[i];
+
+                    try processPixelDifference(
+                        pixel_offset,
+                        pixel_offset,
+                        base_color,
+                        comp_color,
+                        base,
+                        comp,
+                        diff_output,
+                        diff_count,
+                        diff_lines,
+                        diff_cols,
+                        ignore_regions,
+                        max_delta,
+                        options,
+                    );
+                }
+            }
+        }
+    }
+
+    const width_usize: usize = base.width;
+    var x: u32 = @intCast(simd_end % width_usize);
+    var y: u32 = @intCast(simd_end / width_usize);
+
+    // Handle remaining pixels
+    while (offset < size) : (offset += 1) {
+        const base_color = base_data[offset];
+        const comp_color = comp_data[offset];
+
+        if (base_color != comp_color) {
+            try processPixelDifference(
+                offset,
+                offset,
+                base_color,
+                comp_color,
+                base,
+                comp,
+                diff_output,
+                diff_count,
+                diff_lines,
+                diff_cols,
+                ignore_regions,
+                max_delta,
+                options,
+            );
+        }
+        increment_coords(&x, &y, base.width);
+    }
+}
+
+pub fn compareDifferentLayouts(base: *const Image, comp: *const Image, diff_output: *?Image, diff_count: *u32, diff_lines: ?*DiffLines, diff_cols: ?*DiffCols, ignore_regions: ?[]u64, max_delta: i64, options: DiffOptions) !void {
+    const base_size = (base.height * base.width);
+    const base_data = base.data;
+    const comp_data = comp.data;
+
+    const SIMD_SIZE = std.simd.suggestVectorLength(u32) orelse if (HAS_AVX512f) 16 else if (HAS_NEON) 8 else 4;
+    const min_width: u32 = @min(base.width, comp.width);
+    const min_height = @min(base.height, comp.height);
+    const steps: u32 = @intCast(min_width / SIMD_SIZE);
+    const base_delta: u32 = base.width - steps * SIMD_SIZE;
+    const comp_delta: u32 = comp.width - steps * SIMD_SIZE;
+
+    var base_offset: usize = 0;
+    var comp_offset: usize = 0;
+    const Vec = @Vector(SIMD_SIZE, u32);
+    var y: u32 = 0;
+    for (0..min_height) |_| {
+        for (0..steps) |_| {
+            const base_vec: Vec = base_data[base_offset .. base_offset + SIMD_SIZE][0..SIMD_SIZE].*;
+            const comp_vec: Vec = comp_data[comp_offset .. comp_offset + SIMD_SIZE][0..SIMD_SIZE].*;
+
+            const diff_mask = base_vec != comp_vec;
+            if (@reduce(.Or, diff_mask)) {
+                // Zig 0.16 requires comptime-known vector indices; copy to arrays first.
+                const mask_arr: [SIMD_SIZE]bool = diff_mask;
+                const base_arr: [SIMD_SIZE]u32 = base_vec;
+                const comp_arr: [SIMD_SIZE]u32 = comp_vec;
+                for (0..SIMD_SIZE) |i| {
+                    if (mask_arr[i]) {
+                        const base_pixel_offset = base_offset + i;
+                        const comp_pixel_offset = comp_offset + i;
+                        const base_color = base_arr[i];
+                        const comp_color = comp_arr[i];
+
+                        try processPixelDifference(
+                            base_pixel_offset,
+                            comp_pixel_offset,
+                            base_color,
+                            comp_color,
+                            base,
+                            comp,
+                            diff_output,
+                            diff_count,
+                            diff_lines,
+                            diff_cols,
+                            ignore_regions,
+                            max_delta,
+                            options,
+                        );
+                    }
+                }
+            }
+
+            base_offset += SIMD_SIZE;
+            comp_offset += SIMD_SIZE;
+        }
+        // handle leftover pixels in a row
+        const processed: u32 = steps * SIMD_SIZE;
+        const remaining: u32 = base.width - processed;
+        for (0..remaining) |i| {
+            const x: u32 = processed + @as(u32, @intCast(i));
+            const base_color = base_data[base_offset + i];
+            if (x >= comp.width) {
+                const alpha = (base_color >> 24) & 0xFF;
+                if (alpha != 0) {
+                    diff_count.* += 1;
+                    if (diff_output.*) |*output| {
+                        output.setImgColor(x, y, options.diff_pixel);
+                    }
+
+                    if (diff_lines) |lines| {
+                        lines.addLine(y);
+                    }
+
+                    if (diff_cols) |cols| {
+                        cols.addCol(x);
+                    }
+                }
+            } else {
+                const comp_color = comp.readRawPixel(x, y);
+                try processPixelDifference(
+                    base_offset + i,
+                    comp_offset + i,
+                    base_color,
+                    comp_color,
+                    base,
+                    comp,
+                    diff_output,
+                    diff_count,
+                    diff_lines,
+                    diff_cols,
+                    ignore_regions,
+                    max_delta,
+                    options,
+                );
+            }
+        }
+
+        if (comp.width > base.width) {
+            for (base.width..comp.width) |cx_usize| {
+                const cx: u32 = @intCast(cx_usize);
+                const comp_color = comp.readRawPixel(cx, y);
+                const alpha = (comp_color >> 24) & 0xFF;
+                if (alpha != 0) {
+                    diff_count.* += 1;
+                    if (diff_lines) |lines| {
+                        lines.addLine(y);
+                    }
+                    if (diff_cols) |cols| {
+                        cols.addCol(cx);
+                    }
+                }
+            }
+        }
+
+        y += 1;
+        base_offset += base_delta;
+        comp_offset += comp_delta;
+    }
+
+    // Handle remaining base pixels when base is taller
+    var x: u32 = 0;
+    while (base_offset < base_size) : (base_offset += 1) {
+        const base_color = base_data[base_offset];
+        const alpha = (base_color >> 24) & 0xFF;
+        if (alpha != 0) {
+            diff_count.* += 1;
+            if (diff_output.*) |*output| {
+                output.setImgColor(x, y, options.diff_pixel);
+            }
+
+            if (diff_lines) |lines| {
+                lines.addLine(y);
+            }
+            if (diff_cols) |cols| {
+                cols.addCol(x);
+            }
+        }
+        increment_coords(&x, &y, base.width);
+    }
+
+    // Handle remaining comp pixels when comp is taller
+    const comp_size: usize = @as(usize, comp.height) * @as(usize, comp.width);
+    var comp_tail: usize = @as(usize, min_height) * @as(usize, comp.width);
+    var comp_x: u32 = 0;
+    var comp_y: u32 = min_height;
+    while (comp_tail < comp_size) : (comp_tail += 1) {
+        const comp_color = comp_data[comp_tail];
+        const alpha = (comp_color >> 24) & 0xFF;
+        if (alpha != 0) {
+            diff_count.* += 1;
+            if (diff_lines) |lines| {
+                lines.addLine(comp_y);
+            }
+            if (diff_cols) |cols| {
+                cols.addCol(comp_x);
+            }
+        }
+        increment_coords(&comp_x, &comp_y, comp.width);
+    }
+}
+
+pub fn compareAVX(base: *const Image, comp: *const Image, diff_count: *u32) !void {
+    if (!HAS_VXDIFF_ASM) return error.Invalid;
+
+    const base_ptr: [*]const u8 = @ptrCast(@alignCast(base.data));
+    const comp_ptr: [*]const u8 = @ptrCast(@alignCast(comp.data));
+
+    const base_w: usize = base.width;
+    const base_h: usize = base.height;
+    const comp_w: usize = comp.width;
+    const comp_h: usize = comp.height;
+
+    diff_count.* = vxdiff(base_ptr, comp_ptr, base_w, comp_w, base_h, comp_h);
+}
+
+extern fn vxdiff(
+    base_rgba: [*]const u8,
+    comp_rgba: [*]const u8,
+    base_width: usize,
+    comp_width: usize,
+    base_height: usize,
+    comp_height: usize,
+) u32;
+
+extern fn odiffRVV(
+    basePtr: [*]const u32,
+    compPtr: [*]const u32,
+    size: usize,
+    max_delta: f32,
+    diff: ?[*]u32,
+    diffcol: u32,
+) u32;
+
+pub noinline fn compareRVV(base: *const Image, comp: *const Image, diff_output: *?Image, diff_count: *u32, diff_lines: ?*DiffLines, ignore_regions: ?[]u64, max_delta: f64, options: DiffOptions) !void {
+    _ = ignore_regions;
+    const basePtr: [*]const u32 = @ptrCast(@alignCast(base.data));
+    const compPtr: [*]const u32 = @ptrCast(@alignCast(comp.data));
+    var diffPtr: ?[*]u32 = null;
+    if (diff_output.*) |*out| {
+        diffPtr = @ptrCast(@alignCast(out.data));
+    }
+
+    const line_by_line = base.width != comp.width or base.height != comp.height or diff_lines != null;
+    if (line_by_line) {
+        var y: u32 = 0;
+        const minHeight = @min(base.height, comp.height);
+        const minWidth = @min(base.width, comp.width);
+        while (y < base.height) : (y += 1) {
+            var cnt: u32 = 0;
+            var x: u32 = 0;
+            if (y < minHeight) {
+                if (diffPtr) |ptr| {
+                    cnt = odiffRVV(basePtr + y * base.width, compPtr + y * comp.width, minWidth, @floatCast(max_delta), ptr + y * base.width, options.diff_pixel);
+                } else {
+                    cnt = odiffRVV(basePtr + y * base.width, compPtr + y * comp.width, minWidth, @floatCast(max_delta), null, options.diff_pixel);
+                }
+                x = minWidth;
+            }
+            while (x < base.width) : (x += 1) {
+                const idx = y * base.width + x;
+                const alpha = (basePtr[idx] >> 24) & 0xFF;
+                cnt += if (alpha != 0) 1 else 0;
+                if (diffPtr) |ptr| {
+                    const old = ptr[idx]; // always read/write for better autovec
+                    ptr[idx] = if (alpha != 0) options.diff_pixel else old;
+                }
+            }
+            if (diff_lines) |lines| {
+                if (cnt > 0) {
+                    lines.addLine(y);
+                }
+            }
+            diff_count.* += cnt;
+        }
+    } else {
+        diff_count.* += odiffRVV(basePtr, compPtr, base.height * base.width, @floatCast(max_delta), diffPtr, options.diff_pixel);
+    }
+}
+
+pub fn diff(
+    base: *const Image,
+    comp: *const Image,
+    options: DiffOptions,
+    allocator: std.mem.Allocator,
+) !DiffVariant {
+    if (options.fail_on_layout_change and (base.width != comp.width or base.height != comp.height)) {
+        return DiffVariant.layout;
+    }
+
+    const diff_output, const diff_count, const diff_percentage, const diff_lines, const diff_cols = try compare(base, comp, options, allocator);
+    return DiffVariant{ .pixel = .{
+        .diff_output = diff_output,
+        .diff_count = diff_count,
+        .diff_percentage = diff_percentage,
+        .diff_lines = diff_lines,
+        .diff_cols = diff_cols,
+    } };
+}

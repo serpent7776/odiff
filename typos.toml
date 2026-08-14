@@ -1,8 +1,6 @@
-[files]
-extend-exclude = [
-   "package.json"
-]
 [default.extend-words]
-esy = "esy"
+"ba" = "ba"
+"odiff" = "odiff"
 
-
+[files]
+extend-exclude = ["build.zig.zon"]

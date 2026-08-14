@@ -13,18 +13,16 @@ do
   fi
 done
 
-if ! git diff --quiet; then
+if [[ "$DRY_RUN" == "false" ]] && ! git diff --quiet; then
   echo "Error: There are unstaged changes in the repository."
   exit 1
 fi
 
-sed -i '' "s/(version [^)]*)/(version $VERSION)/g" dune-project
-dune build 
+# stamps the version on build.zig.zon and every npm package + cross-package dependency pin
+node scripts/set-npm-version.js "$VERSION"
+zig build --release=fast
+npm install --ignore-scripts
 
-sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/g" package.json
-npm install
-
-sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/g" npm_package/package.json
 
 if [ "$DRY_RUN" == true ]; then
   echo "Dry run, not committing or tagging"
@@ -35,3 +33,4 @@ else
   git push origin "v$VERSION"
   git push
 fi
+
