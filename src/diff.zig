@@ -9,7 +9,7 @@ const Image = io.Image;
 const ArrayList = std.ArrayList;
 
 const HAS_AVX512f = std.Target.x86.featureSetHas(builtin.cpu.features, .avx512f);
-const HAS_AVX512bwvl =
+pub const HAS_AVX512bwvl =
     HAS_AVX512f and
     std.Target.x86.featureSetHas(builtin.cpu.features, .avx512bw) and
     std.Target.x86.featureSetHas(builtin.cpu.features, .avx512vl);

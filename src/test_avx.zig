@@ -80,22 +80,27 @@ fn makeImage(allocator: std.mem.Allocator, width: u32, height: u32, pixels: []co
     };
 }
 
-fn expectAsmDiffCount(allocator: std.mem.Allocator, width: u32, height: u32, pixels1: []const u32, pixels2: []const u32, expected: u32) !void {
+fn expectAsmMatchesScalar(allocator: std.mem.Allocator, width: u32, height: u32, pixels1: []const u32, pixels2: []const u32, expected: u32) !void {
+    if (!diff.HAS_AVX512bwvl) return error.SkipZigTest;
+
     var img1 = try makeImage(allocator, width, height, pixels1);
     defer img1.deinit(allocator);
 
     var img2 = try makeImage(allocator, width, height, pixels2);
     defer img2.deinit(allocator);
 
+    var asm_count: u32 = 0;
+    try diff.compareAVX(&img1, &img2, &asm_count);
+
     const options = diff.DiffOptions{
         .capture_diff = false,
-        .enable_asm = true,
     };
-    var diff_output, const diff_count, _, var diff_lines, _ = try diff.compare(&img1, &img2, options, allocator);
+    var diff_output, const scalar_count, _, var diff_lines, _ = try diff.compare(&img1, &img2, options, allocator);
     defer if (diff_output) |*img| img.deinit(allocator);
     defer if (diff_lines) |*lines| lines.deinit();
 
-    try expectEqual(expected, diff_count);
+    try expectEqual(expected, scalar_count);
+    try expectEqual(scalar_count, asm_count);
 }
 
 test "transparent pixel does not affect diff of neighbouring pixels" {
@@ -104,14 +109,14 @@ test "transparent pixel does not affect diff of neighbouring pixels" {
     const allocator = gpa.allocator();
 
     // pixel 0 fully transparent in both images, pixel 1 black vs white
-    try expectAsmDiffCount(allocator, 4, 1, &.{
+    try expectAsmMatchesScalar(allocator, 4, 1, &.{
         rgba(0, 0, 0, 0), rgba(0, 0, 0, 255), rgba(32, 64, 96, 255), rgba(96, 64, 32, 255),
     }, &.{
         rgba(0, 0, 0, 0), rgba(255, 255, 255, 255), rgba(32, 64, 96, 255), rgba(96, 64, 32, 255),
     }, 1);
 
     // transparent vs opaque black differs only in pixel 0
-    try expectAsmDiffCount(allocator, 4, 1, &.{
+    try expectAsmMatchesScalar(allocator, 4, 1, &.{
         rgba(0, 0, 0, 0), rgba(5, 5, 5, 255), rgba(6, 6, 6, 255), rgba(7, 7, 7, 255),
     }, &.{
         rgba(0, 0, 0, 255), rgba(5, 5, 5, 255), rgba(6, 6, 6, 255), rgba(7, 7, 7, 255),
@@ -119,7 +124,7 @@ test "transparent pixel does not affect diff of neighbouring pixels" {
 
     // same as the first case, but in the leftover path (width not divisible by 4):
     // pixel 4 fully transparent in both images, pixel 5 black vs white
-    try expectAsmDiffCount(allocator, 7, 1, &.{
+    try expectAsmMatchesScalar(allocator, 7, 1, &.{
         rgba(1, 2, 3, 255), rgba(4, 5, 6, 255), rgba(7, 8, 9, 255), rgba(10, 11, 12, 255),
         rgba(0, 0, 0, 0),   rgba(0, 0, 0, 255), rgba(13, 14, 15, 255),
     }, &.{
