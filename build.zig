@@ -73,6 +73,7 @@ pub fn build(b: *std.Build) !void {
             linkDeps(b, target, optimize, dynamic, integration_test.root_module);
 
             const run_integration_test = b.addRunArtifact(integration_test);
+            run_integration_test.step.dependOn(b.getInstallStep());
             integration_test_steps.append(run_integration_test) catch @panic("OOM");
         }
 
@@ -92,6 +93,7 @@ pub fn build(b: *std.Build) !void {
             });
 
             const run_pure_test = b.addRunArtifact(pure_test);
+            run_pure_test.step.dependOn(b.getInstallStep());
             integration_test_steps.append(run_pure_test) catch @panic("OOM");
         }
     }
@@ -100,7 +102,6 @@ pub fn build(b: *std.Build) !void {
     test_step.dependOn(&run_lib_unit_tests.step);
 
     const integration_test_step = b.step("test-integration", "Run integration tests with test images");
-    // Ensure the main executable is built before running integration tests
     integration_test_step.dependOn(b.getInstallStep());
     for (integration_test_steps.items) |test_run_step| {
         integration_test_step.dependOn(&test_run_step.step);
