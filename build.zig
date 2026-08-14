@@ -50,8 +50,8 @@ pub fn build(b: *std.Build) !void {
         "src/test_server.zig",
     };
 
-    var integration_test_steps = std.array_list.Managed(*std.Build.Step.Run).init(b.allocator);
-    defer integration_test_steps.deinit();
+    var integration_test_runs = std.array_list.Managed(*std.Build.Step.Run).init(b.allocator);
+    defer integration_test_runs.deinit();
 
     if (!is_cross_compiling) {
         const root_lib = b.addLibrary(.{
@@ -74,7 +74,7 @@ pub fn build(b: *std.Build) !void {
 
             const run_integration_test = b.addRunArtifact(integration_test);
             run_integration_test.step.dependOn(b.getInstallStep());
-            integration_test_steps.append(run_integration_test) catch @panic("OOM");
+            integration_test_runs.append(run_integration_test) catch @panic("OOM");
         }
 
         for (integration_tests_pure_zig) |test_path| {
@@ -94,7 +94,7 @@ pub fn build(b: *std.Build) !void {
 
             const run_pure_test = b.addRunArtifact(pure_test);
             run_pure_test.step.dependOn(b.getInstallStep());
-            integration_test_steps.append(run_pure_test) catch @panic("OOM");
+            integration_test_runs.append(run_pure_test) catch @panic("OOM");
         }
     }
 
@@ -103,7 +103,7 @@ pub fn build(b: *std.Build) !void {
 
     const integration_test_step = b.step("test-integration", "Run integration tests with test images");
     integration_test_step.dependOn(b.getInstallStep());
-    for (integration_test_steps.items) |test_run_step| {
+    for (integration_test_runs.items) |test_run_step| {
         integration_test_step.dependOn(&test_run_step.step);
     }
 
