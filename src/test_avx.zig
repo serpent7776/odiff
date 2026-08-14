@@ -81,7 +81,7 @@ fn makeImage(allocator: std.mem.Allocator, width: u32, height: u32, pixels: []co
 }
 
 fn expectAsmMatchesScalar(allocator: std.mem.Allocator, width: u32, height: u32, pixels1: []const u32, pixels2: []const u32, expected: u32) !void {
-    if (!diff.HAS_AVX512bwvl) return error.SkipZigTest;
+    if (!diff.HAS_VXDIFF_ASM) return error.SkipZigTest;
 
     var img1 = try makeImage(allocator, width, height, pixels1);
     defer img1.deinit(allocator);
